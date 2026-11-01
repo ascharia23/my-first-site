@@ -3,32 +3,311 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>My First Site</title>
+  <title>Trace</title>
+
+  <!-- ================= CSS: how the page LOOKS ================= -->
   <style>
+    /* Colors live here so you can change the whole look in one place */
+    :root {
+      --bg: #f4f1ea;
+      --card: #fffdf8;
+      --ink: #1c2b2d;
+      --muted: #6a7775;
+      --line: #c4512d;      /* the path you draw */
+      --visited: #f6e1d8;   /* squares you have passed through */
+      --grid: #d9d2c0;
+    }
+    * { box-sizing: border-box; }
     body {
-      font-family: Arial, sans-serif;
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Arial, Helvetica, sans-serif;
       text-align: center;
-      padding: 60px 20px;
-      background: #f4f1ea;
-      color: #1c2b2d;
     }
+    main { max-width: 520px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { margin: 0 0 4px; font-size: 40px; letter-spacing: 1px; }
+    .sub { margin: 0 0 18px; color: var(--muted); }
+    .bar { display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 10px; padding: 0 4px; }
+
+    /* The board is a square. The number of columns is set by JavaScript. */
+    #boardWrap { position: relative; width: min(92vw, 460px); aspect-ratio: 1; margin: 0 auto; }
+    #board {
+      display: grid;
+      width: 100%; height: 100%;
+      gap: 3px;
+      background: var(--grid);
+      border: 3px solid var(--grid);
+      border-radius: 14px;
+      overflow: hidden;
+      touch-action: none;          /* lets you drag on a phone without the page scrolling */
+      user-select: none;
+    }
+    .cell { background: var(--card); display: flex; align-items: center; justify-content: center; }
+    .cell.visited { background: var(--visited); }
+    /* the line is drawn on top of the board in an SVG layer */
+    #line { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .dot {
+      position: relative; z-index: 2;
+      width: 52%; aspect-ratio: 1; border-radius: 50%;
+      background: var(--ink); color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: bold; font-size: clamp(14px, 4.5vw, 24px);
+      pointer-events: none;
+    }
+    .dot.done { background: var(--line); }
+
+    .buttons { display: flex; gap: 10px; justify-content: center; margin: 18px 0 8px; flex-wrap: wrap; }
     button {
-      font-size: 16px;
-      padding: 12px 24px;
-      border: none;
-      border-radius: 8px;
-      background: #c4512d;
-      color: white;
-      cursor: pointer;
+      font-size: 16px; padding: 10px 18px; border-radius: 10px;
+      border: 1px solid var(--grid); background: var(--card); color: var(--ink); cursor: pointer;
     }
+    button.primary { background: var(--line); border-color: var(--line); color: #fff; font-weight: bold; }
+    #msg { min-height: 28px; font-weight: bold; margin: 10px 0; }
   </style>
 </head>
+
+<!-- ================= HTML: what is ON the page ================= -->
 <body>
-  <h1>Hello, I built this!</h1>
-  <p>This is my first website.</p>
-  <button onclick="document.getElementById('msg').textContent = 'It works!'">
-    Click me
-  </button>
-  <p id="msg"></p>
+  <main>
+    <h1>Trace</h1>
+    <p class="sub">Draw one line from 1 to the last number, in order, through every square.</p>
+
+    <div class="bar"><span id="lvl">Level 1</span><span id="timer">0:00</span></div>
+
+    <div id="boardWrap">
+      <div id="board"></div>
+      <svg id="line"></svg>
+    </div>
+
+    <p id="msg"></p>
+    <div class="buttons">
+      <button id="undo">Undo</button>
+      <button id="restart">Restart</button>
+      <button id="fresh">New puzzle</button>
+      <button id="next" class="primary" hidden>Next level →</button>
+    </div>
+    <p class="sub">Press on the 1 and drag. Drag back over your line to undo.</p>
+  </main>
+
+  <!-- ================= JavaScript: how the game WORKS ================= -->
+  <script>
+    // ---------- Game state (the things the game needs to remember) ----------
+    let level = 1;        // current level
+    let n = 3;            // the board is n x n squares
+    let numAt = {};       // which square holds which number, e.g. { 4: 1, 12: 2 }
+    let totalNums = 0;    // the highest number on the board
+    let path = [];        // the squares you have drawn through, in order
+    let drawing = false;  // true while your finger / mouse is held down
+    let won = false;
+    let solution = [];    // the hidden answer (used to place the numbers)
+    let seconds = 0, timerId = null;
+
+    const board = document.getElementById("board");
+    const svg = document.getElementById("line");
+
+    // ---------- Level settings: later levels are bigger with fewer hints ----------
+    function settingsFor(lv) {
+      const size = Math.min(8, 3 + Math.floor((lv - 1) / 2));      // 3,3,4,4,5,5,6,6,7,7,8...
+      const ratio = Math.max(0.15, 0.5 - 0.04 * (lv - 1));          // share of squares that get a number
+      const nums = Math.max(3, Math.round(size * size * ratio));
+      return { size, nums };
+    }
+
+    // ---------- Making a puzzle that is always solvable ----------
+    // Step 1: make a random path that visits every square once ("backbite" method).
+    function randomFullPath(size) {
+      let p = [];
+      for (let r = 0; r < size; r++) {                // start with a simple snake shape
+        const row = [];
+        for (let c = 0; c < size; c++) row.push(r * size + c);
+        if (r % 2 === 1) row.reverse();
+        p = p.concat(row);
+      }
+      for (let s = 0; s < size * size * 30; s++) {    // then shuffle it with many small twists
+        if (Math.random() < 0.5) p.reverse();
+        const head = p[p.length - 1];
+        const hr = Math.floor(head / size), hc = head % size;
+        const options = [];
+        [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dr, dc]) => {
+          const r = hr + dr, c = hc + dc;
+          if (r >= 0 && r < size && c >= 0 && c < size) options.push(r * size + c);
+        });
+        const q = options[Math.floor(Math.random() * options.length)];
+        if (q === p[p.length - 2]) continue;
+        const j = p.indexOf(q);
+        p = p.slice(0, j + 1).concat(p.slice(j + 1).reverse());
+      }
+      return p;
+    }
+
+    // Step 2: drop the numbers along that path, evenly spaced.
+    function newPuzzle() {
+      const s = settingsFor(level);
+      n = s.size;
+      solution = randomFullPath(n);
+      totalNums = s.nums;
+      numAt = {};
+      for (let i = 0; i < totalNums; i++) {
+        const idx = Math.round(i * (solution.length - 1) / (totalNums - 1));
+        numAt[solution[idx]] = i + 1;
+      }
+      path = [];
+      won = false;
+      drawing = false;
+      document.getElementById("next").hidden = true;
+      document.getElementById("msg").textContent = "";
+      document.getElementById("lvl").textContent = "Level " + level;
+      buildBoard();
+      resetTimer();
+      render();
+    }
+
+    // ---------- Drawing the board ----------
+    function buildBoard() {
+      board.innerHTML = "";
+      board.style.gridTemplateColumns = "repeat(" + n + ", 1fr)";
+      board.style.gridTemplateRows = "repeat(" + n + ", 1fr)";
+      svg.setAttribute("viewBox", "0 0 " + n + " " + n);
+      for (let i = 0; i < n * n; i++) {
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        cell.dataset.i = i;
+        if (numAt[i]) {
+          const d = document.createElement("div");
+          d.className = "dot";
+          d.textContent = numAt[i];
+          cell.appendChild(d);
+        }
+        board.appendChild(cell);
+      }
+    }
+
+    // Redraw everything that changes while you play
+    function render() {
+      const reached = numbersReached();
+      board.querySelectorAll(".cell").forEach((cell) => {
+        const i = +cell.dataset.i;
+        cell.classList.toggle("visited", path.includes(i));
+        const dot = cell.querySelector(".dot");
+        if (dot) dot.classList.toggle("done", numAt[i] <= reached && path.includes(i));
+      });
+      const pts = path.map((i) => (i % n + 0.5) + "," + (Math.floor(i / n) + 0.5)).join(" ");
+      svg.innerHTML = '<polyline points="' + pts + '" fill="none" stroke="#c4512d" ' +
+        'stroke-width="0.34" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>';
+    }
+
+    function numbersReached() {
+      return path.filter((i) => numAt[i]).length;
+    }
+
+    function isNeighbor(a, b) {
+      const ar = Math.floor(a / n), ac = a % n, br = Math.floor(b / n), bc = b % n;
+      return Math.abs(ar - br) + Math.abs(ac - bc) === 1;
+    }
+
+    // Is this square allowed as your next step?
+    function canEnter(i) {
+      if (path.includes(i)) return false;
+      if (numAt[i] && numAt[i] !== numbersReached() + 1) return false; // numbers must be in order
+      return true;
+    }
+
+    function squareUnder(e) {
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const cell = el && el.closest ? el.closest(".cell") : null;
+      return cell ? +cell.dataset.i : null;
+    }
+
+    // ---------- Mouse / finger controls ----------
+    board.addEventListener("pointerdown", (e) => {
+      if (won) return;
+      const i = squareUnder(e);
+      if (i === null) return;
+      if (numAt[i] === 1) {
+        path = [i];                                  // pressing the 1 starts a new line
+      } else if (path.length && path[path.length - 1] === i) {
+        // pressing the end of your line lets you keep going
+      } else {
+        return;
+      }
+      drawing = true;
+      board.setPointerCapture(e.pointerId);
+      startTimer();
+      render();
+    });
+
+    board.addEventListener("pointermove", (e) => {
+      if (!drawing || won) return;
+      const i = squareUnder(e);
+      if (i === null) return;
+      const last = path[path.length - 1];
+      if (i === last) return;
+      if (path.length > 1 && i === path[path.length - 2]) {
+        path.pop();                                  // moving back over your line undoes it
+      } else if (isNeighbor(i, last) && canEnter(i)) {
+        path.push(i);
+      } else {
+        return;
+      }
+      render();
+      checkWin();
+    });
+
+    window.addEventListener("pointerup", () => { drawing = false; });
+
+    // ---------- Winning ----------
+    function checkWin() {
+      const last = path[path.length - 1];
+      if (path.length === n * n && numAt[last] === totalNums) {
+        won = true;
+        drawing = false;
+        stopTimer();
+        document.getElementById("msg").textContent = "Solved in " + formatTime(seconds) + "!";
+        document.getElementById("next").hidden = false;
+        saveLevel(level + 1);
+      }
+    }
+
+    // ---------- Buttons ----------
+    document.getElementById("undo").onclick = () => {
+      if (won) return;
+      path.pop();
+      render();
+    };
+    document.getElementById("restart").onclick = () => {
+      if (won) return;
+      path = [];
+      render();
+    };
+    document.getElementById("fresh").onclick = () => newPuzzle();
+    document.getElementById("next").onclick = () => { level++; newPuzzle(); };
+
+    // ---------- Timer ----------
+    function formatTime(s) { return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+    function startTimer() {
+      if (timerId) return;
+      timerId = setInterval(() => {
+        seconds++;
+        document.getElementById("timer").textContent = formatTime(seconds);
+      }, 1000);
+    }
+    function stopTimer() { clearInterval(timerId); timerId = null; }
+    function resetTimer() {
+      stopTimer();
+      seconds = 0;
+      document.getElementById("timer").textContent = "0:00";
+    }
+
+    // ---------- Remember the level in this browser (works without it too) ----------
+    function saveLevel(l) { try { localStorage.setItem("trace-level", l); } catch (e) {} }
+    function loadLevel() {
+      try { return parseInt(localStorage.getItem("trace-level"), 10) || 1; } catch (e) { return 1; }
+    }
+
+    // ---------- Start the game ----------
+    level = loadLevel();
+    newPuzzle();
+  </script>
 </body>
 </html>
