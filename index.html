@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My First Site</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 60px 20px;
+      background: #f4f1ea;
+      color: #1c2b2d;
+    }
+    button {
+      font-size: 16px;
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      background: #c4512d;
+      color: white;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>Hello, I built this!</h1>
+  <p>This is my first website.</p>
+  <button onclick="document.getElementById('msg').textContent = 'It works!'">
+    Click me
+  </button>
+  <p id="msg"></p>
+</body>
+</html>
